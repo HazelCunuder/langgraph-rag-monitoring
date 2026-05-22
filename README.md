@@ -15,6 +15,65 @@
 </p>
 <!-- markdownlint-restore -->
 
+## Déploiement GCP (Google Cloud Platform)
+
+Cette section détaille l'infrastructure Cloud sous-jacente, la gestion stricte des privilèges (principe du moindre privilège) ainsi que les procédures d'exploitation de l'application Simplon RAG.
+
+### 1. Services GCP utilisés
+
+| Service GCP | Rôle dans l'architecture |
+| :--- | :--- |
+| **Cloud Run** | Héberge et exécute de manière serverless les conteneurs du Frontend (Streamlit) et de l'API (FastAPI). |
+| **Cloud SQL (PostgreSQL)** | Stocke de manière managée les données relationnelles et utilise l'extension `pgvector` pour les embeddings du RAG. |
+| **Artifact Registry** | Stocke de manière sécurisée les images de conteneurs Docker poussées pour le déploiement. |
+| **Cloud Storage** | Stocke les documents bruts (corpus de documents PDF/TXT) importés pour alimenter le système RAG. |
+| **Secret Manager** | Centralise et sécurise les clés d'API (Mistral AI, etc.) pour éviter de les exposer en clair. |
+
+---
+
+### 2. Matrice des Rôles IAM et Comptes de Service (SA)
+
+Afin de respecter le **principe du moindre privilège**, chaque composant possède son propre compte de service avec des permissions minimales et ciblées.
+
+#### A. GitHub Actions CI/CD (`sa-github-actions@...`)
+* **Rôles attribués :**
+    * `roles/artifactregistry.writer` (Administrateur d'Artifact Registry)
+    * `roles/run.admin` (Administrateur Cloud Run)
+    * `roles/iam.serviceAccountUser` (Utilisateur de compte de service)
+* **Justification :** Ces permissions permettent uniquement d'injecter une nouvelle image Docker dans le registre et de déclencher une mise à jour des révisions Cloud Run. Le rôle `serviceAccountUser` est requis pour que GitHub puisse lier les services Cloud Run à leurs comptes de service respectifs sans posséder de permissions globales d'administration du projet.
+
+#### B. API FastAPI (`sa-rag-api@...`)
+* **Rôles attribués :**
+    * `roles/cloudsql.client` (Client Cloud SQL)
+    * `roles/storage.objectViewer` (Lecteur des objets Storage)
+    * `roles/secretmanager.secretAccessor` (Accesseur de secrets)
+* **Justification :** L'API doit pouvoir joindre la base de données via le proxy Cloud SQL, lire les documents à vectoriser dans le bucket, et décoder les clés d'API privées (Mistral AI) au démarrage. Elle n'a aucun droit d'écriture sur le bucket ni de modification sur l'infrastructure (pas de droits `admin` ou `editor`).
+
+#### C. Frontend Streamlit (`sa-rag-frontend@...`)
+* **Rôles attribués :**
+    * *(Aucun rôle GCP spécifique requis)*
+* **Justification :** Le Frontend est une interface publique isolée. Elle communique uniquement avec le Back via des requêtes HTTP standard (URL publique de l'API). Elle n'interagit directement avec aucun service interne de l'infrastructure GCP, éliminant ainsi toute surface d'attaque en cas de compromission du Front.
+
+---
+
+### 3. Procédure de Rollback d'une révision Cloud Run
+
+En cas d'anomalie détectée en production après un déploiement, Cloud Run permet un retour en arrière (rollback) instantané et sans coupure de service (zéro-downtime) grâce à l'historique des révisions.
+
+1. Accédez à la console **Cloud Run** et sélectionnez le service concerné (`simplon-rag-api` ou `simplon-rag-frontend`).
+2. Allez sur l'onglet **Révisions**.
+3. Identifiez la dernière version stable connue dans la liste (basée sur la date ou le tag de version).
+4. Cliquez sur les trois petits points verticaux `...` à l'extrémité droite de la ligne de cette révision stable, puis sélectionnez **Gérer le trafic**.
+5. Modifiez l'attribution du trafic en passant la version défaillante à `0%` et attribuez `100%` du trafic à la révision stable sélectionnée.
+6. Cliquez sur **Enregistrer**. La bascule réseau est immédiate.
+
+---
+
+### 4. URLs de l'Environnement de Production
+
+* **API (FastAPI Backend) :** `https://simplon-rag-api-572169748454.europe-west9.run.app`
+* **Interface Utilisateur (Streamlit Frontend) :** `https://simplon-rag-frontend-572169748454.europe-west9.run.app`
+
 ---
 
 Intelligent support chatbot example, built on a Retrieval-Augmented Generation (RAG) architecture
